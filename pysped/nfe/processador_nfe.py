@@ -62,6 +62,7 @@ from webservices_flags import (UF_CODIGO,
                                WS_NFE_INUTILIZACAO,
                                WS_NFE_AUTORIZACAO,
                                WS_NFE_CONSULTA_AUTORIZACAO,
+                               WS_DFE_DISTRIBUICAO,
                                )
 import webservices_1
 import webservices_2
@@ -117,6 +118,8 @@ from leiaute import InutNFe_310, RetInutNFe_310, ProcInutNFe_310
 from leiaute import ConsSitNFe_310, RetConsSitNFe_310
 from leiaute import ConsStatServ_310, RetConsStatServ_310
 
+from leiaute import DistDFeInt_100, RetDistDFeInt_100, SOAPEnvioDistDFe_100, SOAPRetornoDistDFe_100
+
 #
 # DANFE
 #
@@ -128,9 +131,10 @@ class ProcessoNFe(object):
         self.webservice = webservice
         self.envio = envio
         self.resposta = resposta
+        self.arquivos = []   #Usado para salvar o xml e nome dos arquivos gerados     
 
     def __repr__(self):
-        return 'Processo: ' + webservices_2.METODO_WS[self.webservice]['metodo']
+        return 'Processo: ' + webservices_3.METODO_WS[self.webservice]['metodo']
 
     def __unicode__(self):
         return unicode(self.__repr__())
@@ -234,8 +238,15 @@ class ProcessadorNFe(object):
 
         elif self.versao == '3.10':
             metodo_ws = webservices_3.METODO_WS
-            self._soap_envio   = SOAPEnvio_200()
-            self._soap_retorno = SOAPRetorno_200()
+
+            if servico == WS_DFE_DISTRIBUICAO:
+                self._soap_envio   = SOAPEnvioDistDFe_100()
+                self._soap_retorno = SOAPRetornoDistDFe_100()
+
+            else:
+                self._soap_envio   = SOAPEnvio_200()
+                self._soap_retorno = SOAPRetorno_200()
+
             self._soap_envio.cUF = UF_CODIGO[self.estado]
 
             if somente_ambiente_nacional:
@@ -271,7 +282,7 @@ class ProcessadorNFe(object):
         # Ceará começou a dar pau, e não aceita o SOAPAction como os demais
         # estados...
         #
-        if self.estado == 'CE':
+        if self.estado == 'CE' or servico == WS_DFE_DISTRIBUICAO:
             self._soap_envio.soap_action_webservice_e_metodo = True
 
         self._soap_retorno.webservice = self._soap_envio.webservice
@@ -360,6 +371,8 @@ class ProcessadorNFe(object):
                 nfe.infNFe.dest.CNPJ.valor = '99999999000191'
                 nfe.infNFe.dest.xNome.valor = 'NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL'
                 nfe.infNFe.dest.IE.valor = ''
+                if self.versao == '3.10':
+                    nfe.infNFe.dest.indIEDest.valor = '2'
 
         processo = ProcessoNFe(webservice=WS_NFE_ENVIO_LOTE, envio=envio, resposta=resposta)
 
@@ -379,32 +392,40 @@ class ProcessadorNFe(object):
         envio.idLote.valor = numero_lote
 
         envio.validar()
+        
+        nome_envio_lote = self.caminho + unicode(envio.idLote.valor).strip().rjust(15, '0') + '-env-lot.xml'
         if self.salvar_arquivos:
-            for n in lista_nfes:
+            for n in lista_nfes:                
                 n.monta_chave()
                 arq = open(self.caminho + n.chave + '-nfe.xml', 'w')
                 arq.write(n.xml.encode('utf-8'))
                 arq.close
 
-            arq = open(self.caminho + unicode(envio.idLote.valor).strip().rjust(15, '0') + '-env-lot.xml', 'w')
+            arq = open(nome_envio_lote, 'w')
             arq.write(envio.xml.encode('utf-8'))
             arq.close()
+
+        #Adiciona arquivos que serão enviados a resposta.
+        for n in lista_nfes:
+            n.monta_chave()            
+            processo.arquivos.append({ 'arquivo': self.caminho + n.chave + '-nfe.xml', 'xml': n.xml })            
+        processo.arquivos.append({ 'arquivo': nome_envio_lote, 'xml': envio.xml })
 
         self._conectar_servico(WS_NFE_ENVIO_LOTE, envio, resposta)
 
         #resposta.validar()
-        if self.salvar_arquivos:
-            nome_arq = self.caminho + unicode(envio.idLote.valor).strip().rjust(15, '0') + '-rec'
+        nome_arq = self.caminho + unicode(envio.idLote.valor).strip().rjust(15, '0') + '-rec'
+        if resposta.cStat.valor != '103':
+            nome_arq += '-rej.xml'
+        else:
+            nome_arq += '.xml'
 
-            if resposta.cStat.valor != '103':
-                nome_arq += '-rej.xml'
-            else:
-                nome_arq += '.xml'
-
+        if self.salvar_arquivos:            
             arq = open(nome_arq, 'w')
             arq.write(resposta.xml.encode('utf-8'))
             arq.close()
-
+        
+        processo.arquivos.append({ 'arquivo': nome_arq, 'xml': resposta.xml })
         return processo
 
     def consultar_recibo(self, ambiente=None, numero_recibo=None):
@@ -429,44 +450,50 @@ class ProcessadorNFe(object):
         envio.nRec.valor  = numero_recibo
 
         envio.validar()
+        nome_arquivo_envio = self.caminho + unicode(envio.nRec.valor).strip().rjust(15, '0') + '-ped-rec.xml'
         if self.salvar_arquivos:
-            arq = open(self.caminho + unicode(envio.nRec.valor).strip().rjust(15, '0') + '-ped-rec.xml', 'w')
+            arq = open(nome_arquivo_envio, 'w')
             arq.write(envio.xml.encode('utf-8'))
             arq.close()
+            
+        processo.arquivos.append({ 'arquivo': nome_arquivo_envio, 'xml': envio.xml })
 
         self._conectar_servico(WS_NFE_CONSULTA_RECIBO, envio, resposta, ambiente)
+        
+        nome_arq = self.caminho + unicode(envio.nRec.valor).strip().rjust(15, '0') + '-pro-rec'
+        if resposta.cStat.valor != '104':
+            nome_arq += '-rej.xml'
+        else:
+            nome_arq += '.xml'
 
+        processo.arquivos.append({ 'arquivo': nome_arq, 'xml': resposta.xml })
+                
         #resposta.validar()
         if self.salvar_arquivos:
-            nome_arq = self.caminho + unicode(envio.nRec.valor).strip().rjust(15, '0') + '-pro-rec'
-
-            if resposta.cStat.valor != '104':
-                nome_arq += '-rej.xml'
-            else:
-                nome_arq += '.xml'
-
             arq = open(nome_arq, 'w')
             arq.write(resposta.xml.encode('utf-8'))
             arq.close()
+           
+        for pn in resposta.protNFe:
+            nome_arq = self.caminho + unicode(pn.infProt.chNFe.valor).strip().rjust(44, '0') + '-pro-nfe-'
 
+            # NF-e autorizada
+            if pn.infProt.cStat.valor == '100':
+                nome_arq += 'aut.xml'
+
+            # NF-e denegada
+            elif pn.infProt.cStat.valor in ('110', '301', '302'):
+                nome_arq += 'den.xml'
+
+            # NF-e rejeitada
+            else:
+                nome_arq += 'rej.xml'
+
+            processo.arquivos.append({ 'arquivo': nome_arq, 'xml': pn.xml })
             #
             # Salvar os resultados dos processamentos
             #
-            for pn in resposta.protNFe:
-                nome_arq = self.caminho + unicode(pn.infProt.chNFe.valor).strip().rjust(44, '0') + '-pro-nfe-'
-
-                # NF-e autorizada
-                if pn.infProt.cStat.valor == '100':
-                    nome_arq += 'aut.xml'
-
-                # NF-e denegada
-                elif pn.infProt.cStat.valor in ('110', '301', '302'):
-                    nome_arq += 'den.xml'
-
-                # NF-e rejeitada
-                else:
-                    nome_arq += 'rej.xml'
-
+            if self.salvar_arquivos:
                 arq = open(nome_arq, 'w')
                 arq.write(pn.xml.encode('utf-8'))
                 arq.close()
@@ -598,8 +625,10 @@ class ProcessadorNFe(object):
         self.certificado.assina_xmlnfe(envio)
 
         envio.validar()
+        nome_arq = self.caminho + unicode(envio.chave).strip().rjust(41, '0') + '-ped-inu.xml'
+        processo.arquivos.append({ 'arquivo': nome_arq, 'xml': envio.xml })
         if self.salvar_arquivos:
-            arq = open(self.caminho + unicode(envio.chave).strip().rjust(41, '0') + '-ped-inu.xml', 'w')
+            arq = open(nome_arq, 'w')
             arq.write(envio.xml.encode('utf-8'))
             arq.close()
 
@@ -625,28 +654,34 @@ class ProcessadorNFe(object):
 
             processo.processo_inutilizacao_nfe = processo_inutilizacao_nfe
 
+        
+        nome_arq = self.caminho + unicode(envio.chave).strip().rjust(41, '0') + '-pro-inu-'
+        # Inutilização autorizada
+        if resposta.infInut.cStat.valor == '102':
+            nome_arq += 'aut.xml'
+        else:
+            nome_arq += 'rej.xml'
+        processo.arquivos.append({ 'arquivo': nome_arq, 'xml': resposta.xml })
+        
         if self.salvar_arquivos:
-            nome_arq = self.caminho + unicode(envio.chave).strip().rjust(41, '0') + '-pro-inu-'
-
-            # Inutilização autorizada
-            if resposta.infInut.cStat.valor == '102':
-                nome_arq += 'aut.xml'
-            else:
-                nome_arq += 'rej.xml'
-
             arq = open(nome_arq, 'w')
             arq.write(resposta.xml.encode('utf-8'))
             arq.close()
 
-            # Se for autorizada, monta o processo de inutilização
-            if resposta.infInut.cStat.valor == '102':
-                nome_arq = self.caminho + unicode(envio.chave).strip().rjust(41, '0') + '-proc-inut-nfe.xml'
+        # Se for autorizada, monta o processo de inutilização
+        if resposta.infInut.cStat.valor == '102':
+            nome_arq = self.caminho + unicode(envio.chave).strip().rjust(41, '0') + '-proc-inut-nfe.xml'
+            processo.arquivos.append({ 'arquivo': nome_arq, 'xml': processo_inutilizacao_nfe.xml })
+            
+            if self.salvar_arquivos:
                 arq = open(nome_arq, 'w')
                 arq.write(processo_inutilizacao_nfe.xml.encode('utf-8'))
                 arq.close()
 
-                # Estranhamente, o nome desse arquivo, pelo manual, deve ser chave-inu.xml
-                nome_arq = self.caminho + unicode(envio.chave).strip().rjust(41, '0') + '-inu.xml'
+            # Estranhamente, o nome desse arquivo, pelo manual, deve ser chave-inu.xml
+            nome_arq = self.caminho + unicode(envio.chave).strip().rjust(41, '0') + '-inu.xml'
+            processo.arquivos.append({ 'arquivo': nome_arq, 'xml': processo_inutilizacao_nfe.xml })
+            if self.salvar_arquivos:
                 arq = open(nome_arq, 'w')
                 arq.write(processo_inutilizacao_nfe.xml.encode('utf-8'))
                 arq.close()
@@ -678,16 +713,19 @@ class ProcessadorNFe(object):
         envio.chNFe.valor = chave_nfe
 
         envio.validar()
+        nome_arq = self.caminho + unicode(chave_nfe).strip().rjust(44, '0') + '-ped-sit.xml'
+        processo.arquivos.append({ 'arquivo': nome_arq, 'xml': envio.xml })
         if self.salvar_arquivos:
-            arq = open(self.caminho + unicode(chave_nfe).strip().rjust(44, '0') + '-ped-sit.xml', 'w')
+            arq = open(nome_arq, 'w')
             arq.write(envio.xml.encode('utf-8'))
             arq.close()
 
         self._conectar_servico(WS_NFE_CONSULTA, envio, resposta, ambiente)
 
         #resposta.validar()
-        if self.salvar_arquivos:
-            nome_arq = self.caminho + unicode(chave_nfe).strip().rjust(44, '0') + '-sit.xml'
+        nome_arq = self.caminho + unicode(chave_nfe).strip().rjust(44, '0') + '-sit.xml'
+        processo.arquivos.append({ 'arquivo': nome_arq, 'xml': resposta.xml })
+        if self.salvar_arquivos:            
             arq = open(nome_arq, 'w')
             arq.write(resposta.xml.encode('utf-8'))
             arq.close()
@@ -697,7 +735,7 @@ class ProcessadorNFe(object):
         # Se a NF-e tiver sido informada, montar o processo da NF-e
         #
         if nfe:
-           nfe.procNFe = self.montar_processo_uma_nota(nfe, protnfe_recibo=resposta.protNFe)
+            nfe.procNFe = self.montar_processo_uma_nota(nfe, protnfe_recibo=resposta.protNFe)
 
         return processo
 
@@ -727,16 +765,20 @@ class ProcessadorNFe(object):
         envio.data        = datetime.now()
 
         envio.validar()
+        nome_arq = self.caminho + envio.data.strftime('%Y%m%dT%H%M%S') + '-ped-sta.xml'
+        processo.arquivos.append({ 'arquivo': nome_arq, 'xml': envio.xml })
         if self.salvar_arquivos:
-            arq = open(self.caminho + envio.data.strftime('%Y%m%dT%H%M%S') + '-ped-sta.xml', 'w')
+            arq = open(nome_arq, 'w')
             arq.write(envio.xml.encode('utf-8'))
             arq.close()
 
         self._conectar_servico(WS_NFE_SITUACAO, envio, resposta, ambiente)
 
         #resposta.validar()
+        nome_arq = self.caminho + envio.data.strftime('%Y%m%dT%H%M%S') + '-sta.xml'
+        processo.arquivos.append({ 'arquivo': nome_arq, 'xml': resposta.xml })
         if self.salvar_arquivos:
-            arq = open(self.caminho + envio.data.strftime('%Y%m%dT%H%M%S') + '-sta.xml', 'w')
+            arq = open(nome_arq, 'w')
             arq.write(resposta.xml.encode('utf-8'))
             arq.close()
 
@@ -836,6 +878,77 @@ class ProcessadorNFe(object):
         self.montar_processo_lista_notas(lista_nfes, dic_protNFe, dic_procNFe)
 
         yield proc_recibo
+
+    def processar_nota_diretamente(self, nfe, consultar_nota=True):
+        #
+        # Definir o caminho geral baseado na 1ª NF-e
+        #
+        caminho_original = self.caminho        
+        nfe.monta_chave()
+        self.caminho = caminho_original
+        ambiente = nfe.infNFe.ide.tpAmb.valor
+        self.caminho = self.monta_caminho_nfe(ambiente=ambiente, chave_nfe=nfe.chave)
+
+        if consultar_nota:
+            #
+            # Verificar se a nota já não foi emitada antes. 
+            #        
+            self.caminho = caminho_original
+            proc_consulta = self.consultar_nota(ambiente=ambiente, chave_nfe=nfe.chave)
+            yield proc_consulta
+    
+            #
+            # Se a nota já constar na SEFAZ
+            #
+            if not (
+                ((self.versao == '1.10') and (proc_consulta.resposta.infProt.cStat.valor in ('217', '999',)))
+                or
+                ((self.versao == '2.00') and (proc_consulta.resposta.cStat.valor in ('217', '999',)))
+            ):
+                #
+                # Interrompe todo o processo
+                #
+                return
+
+        #
+        # Nenhuma das notas estava já enviada, enviá-las então
+        #                
+        lista_nfes = [nfe]
+        self.caminho = caminho_original
+        self.caminho = self.monta_caminho_nfe(ambiente=ambiente, chave_nfe=nfe.chave)
+        proc_envio = self.enviar_lote(lista_nfes=lista_nfes)
+        yield proc_envio
+
+        ret_envi_nfe = proc_envio.resposta
+
+        #
+        # Deu certo?
+        #
+        if ret_envi_nfe.cStat.valor == '103':
+            #
+            # Aguarda o tempo do processamento antes da consulta
+            #
+            time.sleep(ret_envi_nfe.infRec.tMed.valor * 1.3)
+
+            proc_recibo = self.consultar_recibo(ambiente=ret_envi_nfe.tpAmb.valor, numero_recibo=ret_envi_nfe.infRec.nRec.valor)
+
+            #
+            # Tenta receber o resultado do processamento do lote
+            #
+            tentativa = 0
+            while proc_recibo.resposta.cStat.valor == '105' and tentativa < self.maximo_tentativas_consulta_recibo:
+                time.sleep(ret_envi_nfe.infRec.tMed.valor * 1.5)
+                tentativa += 1
+                proc_recibo = self.consultar_recibo(ambiente=ret_envi_nfe.tpAmb.valor, numero_recibo=ret_envi_nfe.infRec.nRec.valor)
+
+            # Montar os processos das NF-es
+            dic_protNFe = proc_recibo.resposta.dic_protNFe
+            dic_procNFe = proc_recibo.resposta.dic_procNFe
+
+            self.caminho = caminho_original
+            self.montar_processo_lista_notas(lista_nfes, dic_protNFe, dic_procNFe)
+
+            yield proc_recibo
 
     def montar_processo_lista_notas(self, lista_nfes, dic_protNFe, dic_procNFe):
         for nfe in lista_nfes:
@@ -1189,78 +1302,78 @@ class ProcessadorNFe(object):
 
         return processo
 
-    def cancelar_nota_evento(self, ambiente=None, chave_nfe=None, numero_protocolo=None, justificativa=None):
+    def cancelar_nota_evento(self, ambiente=None, chave_nfe=None, numero_protocolo=None, justificativa=None, data=None):
         evento = EventoCancNFe_100()
         evento.infEvento.tpAmb.valor = ambiente or self.ambiente
         evento.infEvento.cOrgao.valor = UF_CODIGO[self.estado]
         evento.infEvento.CNPJ.valor = chave_nfe[6:20] # Extrai o CNPJ da própria chave da NF-e
         evento.infEvento.chNFe.valor = chave_nfe
-        evento.infEvento.dhEvento.valor = datetime.now()
+        evento.infEvento.dhEvento.valor = data or datetime.now()
         evento.infEvento.detEvento.nProt.valor = numero_protocolo
         evento.infEvento.detEvento.xJust.valor = justificativa
 
         processo = self.enviar_lote_cancelamento(lista_eventos=[evento])
         return processo
 
-    def corrigir_nota_evento(self, ambiente=None, chave_nfe=None, numero_sequencia=None, correcao=None):
+    def corrigir_nota_evento(self, ambiente=None, chave_nfe=None, numero_sequencia=None, correcao=None, data=None):
         evento = EventoCCe_100()
         evento.infEvento.tpAmb.valor = ambiente or self.ambiente
         evento.infEvento.cOrgao.valor = UF_CODIGO[self.estado]
         evento.infEvento.CNPJ.valor = chave_nfe[6:20] # Extrai o CNPJ da própria chave da NF-e
         evento.infEvento.chNFe.valor = chave_nfe
-        evento.infEvento.dhEvento.valor = datetime.now()
+        evento.infEvento.dhEvento.valor = data or datetime.now()
         evento.infEvento.detEvento.xCorrecao.valor = correcao
         evento.infEvento.nSeqEvento.valor = numero_sequencia or 1
 
         processo = self.enviar_lote_cce(lista_eventos=[evento])
         return processo
 
-    def confirmar_operacao_evento(self, ambiente=None, chave_nfe=None, cnpj=None):
+    def confirmar_operacao_evento(self, ambiente=None, chave_nfe=None, cnpj=None, data=None):
         evento = EventoConfRecebimento_100()
         evento.infEvento.tpAmb.valor = ambiente or self.ambiente
         evento.infEvento.cOrgao.valor = UF_CODIGO[self.estado]
         evento.infEvento.CNPJ.valor = cnpj
         evento.infEvento.chNFe.valor = chave_nfe
-        evento.infEvento.dhEvento.valor = datetime.now()
+        evento.infEvento.dhEvento.valor = data or datetime.now()
         evento.infEvento.tpEvento.valor = CONF_RECEBIMENTO_CONFIRMAR_OPERACAO
         evento.infEvento.detEvento.descEvento.valor = DESCEVENTO_CONF_RECEBIMENTO[evento.infEvento.tpEvento.valor]
 
         processo = self.enviar_lote_confirmacao_recebimento(lista_eventos=[evento])
         return processo
 
-    def conhecer_operacao_evento(self, ambiente=None, chave_nfe=None, cnpj=None):
+    def conhecer_operacao_evento(self, ambiente=None, chave_nfe=None, cnpj=None, data=None):
         evento = EventoConfRecebimento_100()
         evento.infEvento.tpAmb.valor = ambiente or self.ambiente
         evento.infEvento.cOrgao.valor = UF_CODIGO[self.estado]
         evento.infEvento.CNPJ.valor = cnpj
         evento.infEvento.chNFe.valor = chave_nfe
-        evento.infEvento.dhEvento.valor = datetime.now()
+        evento.infEvento.dhEvento.valor = data or datetime.now()
         evento.infEvento.tpEvento.valor = CONF_RECEBIMENTO_CIENCIA_OPERACAO
         evento.infEvento.detEvento.descEvento.valor = DESCEVENTO_CONF_RECEBIMENTO[evento.infEvento.tpEvento.valor]
 
         processo = self.enviar_lote_confirmacao_recebimento(lista_eventos=[evento])
         return processo
 
-    def desconhecer_operacao_evento(self, ambiente=None, chave_nfe=None, cnpj=None):
+    def desconhecer_operacao_evento(self, ambiente=None, chave_nfe=None, cnpj=None, data=None):
         evento = EventoConfRecebimento_100()
         evento.infEvento.tpAmb.valor = ambiente or self.ambiente
         evento.infEvento.cOrgao.valor = UF_CODIGO[self.estado]
         evento.infEvento.CNPJ.valor = cnpj
         evento.infEvento.chNFe.valor = chave_nfe
-        evento.infEvento.dhEvento.valor = datetime.now()
+        evento.infEvento.dhEvento.valor = data or datetime.now()
         evento.infEvento.tpEvento.valor = CONF_RECEBIMENTO_DESCONHECIMENTO_OPERACAO
         evento.infEvento.detEvento.descEvento.valor = DESCEVENTO_CONF_RECEBIMENTO[evento.infEvento.tpEvento.valor]
 
         processo = self.enviar_lote_confirmacao_recebimento(lista_eventos=[evento])
         return processo
 
-    def nao_realizar_operacao_evento(self, ambiente=None, chave_nfe=None, cnpj=None, justificativa=None):
+    def nao_realizar_operacao_evento(self, ambiente=None, chave_nfe=None, cnpj=None, justificativa=None, data=None):
         evento = EventoConfRecebimento_100()
         evento.infEvento.tpAmb.valor = ambiente or self.ambiente
         evento.infEvento.cOrgao.valor = UF_CODIGO[self.estado]
         evento.infEvento.CNPJ.valor = cnpj
         evento.infEvento.chNFe.valor = chave_nfe
-        evento.infEvento.dhEvento.valor = datetime.now()
+        evento.infEvento.dhEvento.valor = data or datetime.now()
         evento.infEvento.tpEvento.valor = CONF_RECEBIMENTO_OPERACAO_NAO_REALIZADA
         evento.infEvento.detEvento.descEvento.valor = DESCEVENTO_CONF_RECEBIMENTO[evento.infEvento.tpEvento.valor]
         evento.infEvento.detEvento.xJust.valor = justificativa
@@ -1312,6 +1425,42 @@ class ProcessadorNFe(object):
         if self.salvar_arquivos:
             arq = open(self.caminho + nome + '-cad.xml', 'w')
             arq.write(resposta.xml.encode('utf-8'))
+            arq.close()
+
+        return processo
+
+    def consultar_distribuicao(self, estado=None, cnpj_cpf=None, ultimo_nsu=None, nsu=None, ambiente=None):
+        envio = DistDFeInt_100()
+        resposta = RetDistDFeInt_100()
+
+        envio.tpAmb.valor = ambiente or self.ambiente
+        envio.cUFAutor.valor = UF_CODIGO[estado or self.estado]
+
+        if len(cnpj_cpf) == 14:
+            envio.CNPJ.valor = cnpj_cpf
+        else:
+            envio.CPF.valor = cnpj_cpf
+
+        if ultimo_nsu is not None:
+            envio.distNSU.ultNSU.valor = unicode(ultimo_nsu)
+        else:
+            envio.consNSU.NSU.valor = unicode(nsu)
+
+        processo = ProcessoNFe(webservice=WS_DFE_DISTRIBUICAO, envio=envio, resposta=resposta)
+
+        envio.validar()
+        nome_arq = self.caminho + datetime.now().strftime('%Y%m%dT%H%M%S')
+        if self.salvar_arquivos:
+            arq = open(nome_arq + '-cons-dist-dfe.xml', 'w')
+            arq.write(envio.xml.encode('utf-8'))
+            arq.close()
+
+        self._conectar_servico(WS_DFE_DISTRIBUICAO, envio, resposta, somente_ambiente_nacional=True)
+
+        #resposta.validar()
+        if self.salvar_arquivos:
+            arq = open(nome_arq + '-ret-dist-dfe.xml', 'w')
+            arq.write(resposta.original.encode('utf-8'))
             arq.close()
 
         return processo
