@@ -800,8 +800,8 @@ class IPI(XMLNFe):
 
 
     def get_xml(self):
-        if self.CST.valor in ('01', '02', '03', '04', '52', '53', '54', '55'):
-            return ''
+#        if self.CST.valor in ('01', '02', '03', '04', '52', '53', '54', '55'):
+#            return ''
 
         #
         # Define as tags baseado no código da situação tributária
